@@ -1,8 +1,5 @@
 ﻿use crate::{list, TodoType, NAME_MAX};
-use core::{
-    mem::{size_of, transmute},
-    ptr::NonNull,
-};
+use core::{mem::size_of, ptr::NonNull};
 
 macro_rules! obj_info {
     ($ident:ident) => {
@@ -16,6 +13,7 @@ macro_rules! obj_info {
     };
 }
 
+/// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L57).
 static mut OBJECT_CONTAINER: [ObjectInformation; ObjIdx::Unknown as usize] = [
     obj_info!(Thread),
     #[cfg(feature = "semaphore")]
@@ -48,6 +46,7 @@ pub struct Object {
 }
 
 /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/include/rtdef.h#L344).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(usize)]
 pub enum ObjectClassType {
     /// The object is not used.
@@ -79,6 +78,7 @@ pub enum ObjectClassType {
 }
 
 /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/include/rtdef.h#L377).
+#[derive(PartialEq, Eq, Debug)]
 pub struct ObjectInformation {
     /// object class type
     r#type: ObjectClassType,
@@ -121,4 +121,64 @@ pub enum ObjIdx {
     Timer,
     /// The object is unknown.
     Unknown,
+}
+
+/// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L201).
+#[inline]
+pub unsafe fn get_information(r#type: ObjectClassType) -> Option<&'static mut ObjectInformation> {
+    OBJECT_CONTAINER.iter_mut().find(|r| r.r#type == r#type)
+}
+
+#[test]
+fn test() {
+    unsafe {
+        assert_eq!(
+            [
+                None,
+                Some(&mut OBJECT_CONTAINER[ObjIdx::Thread as usize]),
+                #[cfg(feature = "semaphore")]
+                Some(&mut OBJECT_CONTAINER[ObjIdx::Semaphore as usize]),
+                #[cfg(feature = "mutex")]
+                Some(&mut OBJECT_CONTAINER[ObjIdx::Mutex as usize]),
+                #[cfg(feature = "event")]
+                Some(&mut OBJECT_CONTAINER[ObjIdx::Event as usize]),
+                #[cfg(feature = "mailbox")]
+                Some(&mut OBJECT_CONTAINER[ObjIdx::MailBox as usize]),
+                #[cfg(feature = "message-queue")]
+                Some(&mut OBJECT_CONTAINER[ObjIdx::MessageQueue as usize]),
+                #[cfg(feature = "mem-heap")]
+                Some(&mut OBJECT_CONTAINER[ObjIdx::MemHeap as usize]),
+                #[cfg(feature = "mem-pool")]
+                Some(&mut OBJECT_CONTAINER[ObjIdx::MemPool as usize]),
+                #[cfg(feature = "device")]
+                Some(&mut OBJECT_CONTAINER[ObjIdx::Device as usize]),
+                Some(&mut OBJECT_CONTAINER[ObjIdx::Timer as usize]),
+                None,
+                None
+            ],
+            [
+                get_information(ObjectClassType::Null),
+                get_information(ObjectClassType::Thread),
+                #[cfg(feature = "semaphore")]
+                get_information(ObjectClassType::Semaphore),
+                #[cfg(feature = "mutex")]
+                get_information(ObjectClassType::Mutex),
+                #[cfg(feature = "event")]
+                get_information(ObjectClassType::Event),
+                #[cfg(feature = "mailbox")]
+                get_information(ObjectClassType::MailBox),
+                #[cfg(feature = "message-queue")]
+                get_information(ObjectClassType::MessageQueue),
+                #[cfg(feature = "mem-heap")]
+                get_information(ObjectClassType::MemHeap),
+                #[cfg(feature = "mem-pool")]
+                get_information(ObjectClassType::MemPool),
+                #[cfg(feature = "device")]
+                get_information(ObjectClassType::Device),
+                get_information(ObjectClassType::Timer),
+                get_information(ObjectClassType::Unknown),
+                get_information(ObjectClassType::Static),
+            ]
+        );
+    }
 }
