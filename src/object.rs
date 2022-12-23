@@ -1,4 +1,4 @@
-﻿use crate::{list, TodoType, NAME_MAX};
+﻿use crate::{cpu, list, TodoType, NAME_MAX};
 use core::{mem::size_of, ptr::NonNull};
 
 macro_rules! obj_info {
@@ -30,6 +30,8 @@ static mut OBJECT_CONTAINER: [ObjectInformation; ObjIdx::Unknown as usize] = [
     obj_info!(MemHeap),
     #[cfg(feature = "mem-pool")]
     obj_info!(MemPool),
+    #[cfg(feature = "device")]
+    obj_info!(Device),
     obj_info!(Timer),
 ];
 
@@ -129,8 +131,17 @@ pub unsafe fn get_information(r#type: ObjectClassType) -> Option<&'static mut Ob
     OBJECT_CONTAINER.iter_mut().find(|r| r.r#type == r#type)
 }
 
+/// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L220).
+pub fn get_length(r#type: ObjectClassType) -> usize {
+    let Some(info) = (unsafe { get_information(r#type) }) else { return 0; };
+    let reg = cpu::interrupt_disable();
+    let ans = info.object_list.into_iter().count();
+    cpu::interrupt_enable(reg);
+    ans
+}
+
 #[test]
-fn test() {
+fn test_get_information() {
     unsafe {
         assert_eq!(
             [
@@ -181,4 +192,10 @@ fn test() {
             ]
         );
     }
+}
+
+#[test]
+fn test_get_length() {
+    assert_eq!(0, get_length(ObjectClassType::Null));
+    assert_eq!(0, get_length(ObjectClassType::Thread));
 }
