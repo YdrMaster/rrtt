@@ -12,5 +12,6 @@ macro_rules! container_of {
 mod cpu;
 mod list;
 mod object;
+mod scheduler;
 
 type TodoType = ();

@@ -1,4 +1,4 @@
-﻿use crate::{cpu, list, TodoType, NAME_MAX};
+﻿use crate::{cpu, list, scheduler, TodoType, NAME_MAX};
 use core::{
     mem::{size_of, MaybeUninit},
     ptr::NonNull,
@@ -54,7 +54,7 @@ pub struct Object {
 
 /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/include/rtdef.h#L344).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(usize)]
+#[repr(u8)]
 pub enum ObjectClassType {
     /// The object is not used.
     Null = 0x00,
@@ -131,7 +131,6 @@ pub enum ObjIdx {
 }
 
 /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L201).
-#[inline]
 pub unsafe fn get_information(r#type: ObjectClassType) -> Option<&'static mut ObjectInformation> {
     OBJECT_CONTAINER.iter_mut().find(|r| r.r#type == r#type)
 }
@@ -139,23 +138,43 @@ pub unsafe fn get_information(r#type: ObjectClassType) -> Option<&'static mut Ob
 /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L220).
 pub fn get_length(r#type: ObjectClassType) -> usize {
     let Some(info) = (unsafe { get_information(r#type) }) else { return 0; };
-    let reg = cpu::interrupt_disable();
-    let ans = info.object_list.into_iter().count();
-    cpu::interrupt_enable(reg);
-    ans
+    let _guard = cpu::InterruptFreeGuard::new();
+    info.object_list.into_iter().count()
 }
 
 /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L248).
 pub fn get_pointers(r#type: ObjectClassType, buf: &mut [MaybeUninit<Object>]) -> usize {
     let Some(info) = (unsafe { get_information(r#type) }) else { return 0; };
-    let reg = cpu::interrupt_disable();
-    let ans = buf
-        .iter_mut()
-        .zip(&info.object_list)
+    let _guard = cpu::InterruptFreeGuard::new();
+    buf.iter_mut()
+        .zip(info.object_list.into_iter().rev())
         .map(|(obj, node)| obj.write(unsafe { *(container_of!(node, Object, list)) }))
-        .count();
-    cpu::interrupt_enable(reg);
-    ans
+        .count()
+}
+
+/// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L289).
+pub fn init(object: &mut MaybeUninit<Object>, r#type: ObjectClassType, name: &str) {
+    let info = unsafe { get_information(r#type) }.unwrap();
+    {
+        let _guard = scheduler::LockNestedGuard::new();
+        let _guard = cpu::InterruptFreeGuard::new();
+        for member in info
+            .object_list
+            .into_iter()
+            .map(|node| container_of!(node, Object, list))
+        {
+            assert_ne!(member, object.as_ptr());
+        }
+    }
+    let object = unsafe { object.assume_init_mut() };
+    let name = name.as_bytes();
+    let len = object.name.len().min(name.len());
+    object.name[..len].copy_from_slice(&name[..len]);
+    object.r#type = r#type as u8 | ObjectClassType::Static as u8;
+    object.flag = 0;
+    // TODO HOOK
+    let _guard = cpu::InterruptFreeGuard::new();
+    info.object_list.insert(&mut object.list);
 }
 
 #[test]
@@ -213,14 +232,19 @@ fn test_get_information() {
 }
 
 #[test]
-fn test_get_length() {
+fn test_modify() {
     assert_eq!(0, get_length(ObjectClassType::Null));
     assert_eq!(0, get_length(ObjectClassType::Thread));
-}
 
-#[test]
-fn test_get_pointer() {
-    let mut pointers = unsafe { MaybeUninit::<[MaybeUninit<Object>; 32]>::uninit().assume_init() };
-    assert_eq!(0, get_pointers(ObjectClassType::Null, &mut pointers));
-    assert_eq!(0, get_pointers(ObjectClassType::Thread, &mut pointers));
+    let mut threads = unsafe { MaybeUninit::<[MaybeUninit<Object>; 2]>::uninit().assume_init() };
+    init(&mut threads[0], ObjectClassType::Thread, "thread0");
+    init(&mut threads[1], ObjectClassType::Thread, "thread1");
+
+    assert_eq!(2, get_length(ObjectClassType::Thread));
+
+    let mut pointers = unsafe { MaybeUninit::<[MaybeUninit<Object>; 8]>::uninit().assume_init() };
+    assert_eq!(2, get_pointers(ObjectClassType::Thread, &mut pointers));
+    for (a, b) in threads.into_iter().zip(pointers) {
+        unsafe { assert_eq!(a.assume_init_read(), b.assume_init_read()) };
+    }
 }

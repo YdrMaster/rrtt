@@ -32,3 +32,19 @@
         pub fn interrupt_enable(_reg: usize) {}
     }
 }
+
+pub struct InterruptFreeGuard(usize);
+
+impl InterruptFreeGuard {
+    #[inline]
+    pub fn new() -> Self {
+        Self(interrupt_disable())
+    }
+}
+
+impl Drop for InterruptFreeGuard {
+    #[inline]
+    fn drop(&mut self) {
+        interrupt_enable(self.0)
+    }
+}
