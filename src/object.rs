@@ -177,6 +177,16 @@ pub fn init(object: &mut MaybeUninit<Object>, r#type: ObjectClassType, name: &st
     info.object_list.insert(&mut object.list);
 }
 
+/// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L347).
+pub fn detach(object: &mut Object) {
+    // TODO HOOK
+
+    object.r#type = 0;
+
+    let _guard = cpu::InterruptFreeGuard::new();
+    object.list.remove();
+}
+
 #[test]
 fn test_get_information() {
     unsafe {
@@ -247,4 +257,16 @@ fn test_modify() {
     for (a, b) in threads.into_iter().zip(pointers) {
         unsafe { assert_eq!(a.assume_init_read(), b.assume_init_read()) };
     }
+
+    detach(unsafe { threads[0].assume_init_mut() });
+
+    assert_eq!(1, get_length(ObjectClassType::Thread));
+
+    assert_eq!(1, get_pointers(ObjectClassType::Thread, &mut pointers));
+    unsafe {
+        assert_eq!(
+            threads[1].assume_init_read(),
+            pointers[0].assume_init_read(),
+        )
+    };
 }

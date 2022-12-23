@@ -45,6 +45,16 @@ impl Node {
             n.prev = NonNull::from(self);
         }
     }
+
+    /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/include/rtservice.h#L82).
+    #[inline]
+    pub fn remove(&mut self) {
+        unsafe {
+            self.next.as_mut().prev = self.prev;
+            self.prev.as_mut().next = self.next;
+            self.init();
+        }
+    }
 }
 
 impl Deref for Node {
