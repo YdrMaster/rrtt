@@ -1,5 +1,8 @@
 ﻿use crate::{cpu, list, TodoType, NAME_MAX};
-use core::{mem::size_of, ptr::NonNull};
+use core::{
+    mem::{size_of, MaybeUninit},
+    ptr::NonNull,
+};
 
 macro_rules! obj_info {
     ($ident:ident) => {
@@ -36,6 +39,8 @@ static mut OBJECT_CONTAINER: [ObjectInformation; ObjIdx::Unknown as usize] = [
 ];
 
 /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/include/rtdef.h#L334).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(C)]
 pub struct Object {
     /// name of kernel object
     name: [u8; NAME_MAX],
@@ -140,6 +145,19 @@ pub fn get_length(r#type: ObjectClassType) -> usize {
     ans
 }
 
+/// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L248).
+pub fn get_pointers(r#type: ObjectClassType, buf: &mut [MaybeUninit<Object>]) -> usize {
+    let Some(info) = (unsafe { get_information(r#type) }) else { return 0; };
+    let reg = cpu::interrupt_disable();
+    let ans = buf
+        .iter_mut()
+        .zip(&info.object_list)
+        .map(|(obj, node)| obj.write(unsafe { *(container_of!(node, Object, list)) }))
+        .count();
+    cpu::interrupt_enable(reg);
+    ans
+}
+
 #[test]
 fn test_get_information() {
     unsafe {
@@ -198,4 +216,11 @@ fn test_get_information() {
 fn test_get_length() {
     assert_eq!(0, get_length(ObjectClassType::Null));
     assert_eq!(0, get_length(ObjectClassType::Thread));
+}
+
+#[test]
+fn test_get_pointer() {
+    let mut pointers = unsafe { MaybeUninit::<[MaybeUninit<Object>; 32]>::uninit().assume_init() };
+    assert_eq!(0, get_pointers(ObjectClassType::Null, &mut pointers));
+    assert_eq!(0, get_pointers(ObjectClassType::Thread, &mut pointers));
 }
