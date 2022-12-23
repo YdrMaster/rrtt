@@ -4,12 +4,11 @@
         pub fn interrupt_disable() -> usize {
             let x: usize;
             core::arch::asm!(
-            "
-                MRS   {}, PRIMASK
+            "   MRS   {}, PRIMASK
                 CPSID I
             ",
                 out(reg) x
-            )
+            );
             x
         }
 
