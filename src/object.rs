@@ -1,5 +1,6 @@
 ﻿use crate::{cpu, list, scheduler, TodoType, NAME_MAX};
 use core::{
+    ffi::CStr,
     mem::{size_of, MaybeUninit},
     ptr::NonNull,
 };
@@ -52,6 +53,94 @@ pub struct Object {
     list: list::Node,
 }
 
+impl Object {
+    /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L201).
+    pub unsafe fn get_information(
+        r#type: ObjectClassType,
+    ) -> Option<&'static mut ObjectInformation> {
+        OBJECT_CONTAINER.iter_mut().find(|r| r.r#type == r#type)
+    }
+
+    /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L220).
+    pub fn get_length(r#type: ObjectClassType) -> usize {
+        let Some(info) = (unsafe { Self::get_information(r#type) }) else { return 0; };
+        let _guard = cpu::InterruptFreeGuard::new();
+        info.object_list.into_iter().count()
+    }
+
+    /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L248).
+    pub fn get_pointers(r#type: ObjectClassType, buf: &mut [MaybeUninit<Object>]) -> usize {
+        let Some(info) = (unsafe { Self::get_information(r#type) }) else { return 0; };
+        let _guard = cpu::InterruptFreeGuard::new();
+        buf.iter_mut()
+            .zip(info.object_list.into_iter().rev())
+            .map(|(obj, node)| obj.write(unsafe { *(container_of!(node, Object, list)) }))
+            .count()
+    }
+
+    /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L289).
+    pub fn init(object: &mut MaybeUninit<Self>, r#type: ObjectClassType, name: &str) {
+        let info = unsafe { Self::get_information(r#type) }.unwrap();
+        {
+            let _guard = scheduler::LockNestedGuard::new();
+            let _guard = cpu::InterruptFreeGuard::new();
+            for member in info
+                .object_list
+                .into_iter()
+                .map(|node| container_of!(node, Object, list))
+            {
+                assert_ne!(member, object.as_ptr());
+            }
+        }
+        let object = unsafe { object.assume_init_mut() };
+        let name = name.as_bytes();
+        let len = (object.name.len() - 1).min(name.len());
+        object.name[..len].copy_from_slice(&name[..len]);
+        object.name[len] = 0;
+        object.r#type = r#type as u8 | ObjectClassType::Static as u8;
+        object.flag = 0;
+        // TODO HOOK
+        let _guard = cpu::InterruptFreeGuard::new();
+        info.object_list.insert(&mut object.list);
+    }
+
+    /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L347).
+    pub fn detach(&mut self) {
+        // TODO HOOK
+
+        self.r#type = 0;
+
+        let _guard = cpu::InterruptFreeGuard::new();
+        self.list.remove();
+    }
+
+    /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L464).
+    #[inline]
+    pub fn is_system_object(&self) -> bool {
+        self.r#type & (ObjectClassType::Static as u8) != 0
+    }
+
+    /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L484).
+    #[inline]
+    pub fn get_type(&self) -> u8 {
+        self.r#type & !(ObjectClassType::Static as u8)
+    }
+
+    /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L500).
+    pub fn find(name: &str, r#type: ObjectClassType) -> Option<&'static mut Object> {
+        let Some(info) = (unsafe { Self::get_information(r#type) }) else { return None; };
+
+        let _guard = scheduler::LockNestedGuard::new();
+        let _guard = cpu::InterruptFreeGuard::new();
+        info.object_list
+            .into_iter()
+            .map(|node| unsafe { &mut *container_of!(node, Object, list).cast_mut() })
+            .find(|obj| unsafe {
+                CStr::from_ptr(obj.name.as_ptr().cast()).to_bytes() == name.as_bytes()
+            })
+    }
+}
+
 /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/include/rtdef.h#L344).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -97,7 +186,7 @@ pub struct ObjectInformation {
 
 /// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L24).
 #[repr(usize)]
-pub enum ObjIdx {
+enum ObjIdx {
     /// The object is a thread.
     Thread = 0,
     #[cfg(feature = "semaphore")]
@@ -130,63 +219,6 @@ pub enum ObjIdx {
     Unknown,
 }
 
-/// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L201).
-pub unsafe fn get_information(r#type: ObjectClassType) -> Option<&'static mut ObjectInformation> {
-    OBJECT_CONTAINER.iter_mut().find(|r| r.r#type == r#type)
-}
-
-/// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L220).
-pub fn get_length(r#type: ObjectClassType) -> usize {
-    let Some(info) = (unsafe { get_information(r#type) }) else { return 0; };
-    let _guard = cpu::InterruptFreeGuard::new();
-    info.object_list.into_iter().count()
-}
-
-/// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L248).
-pub fn get_pointers(r#type: ObjectClassType, buf: &mut [MaybeUninit<Object>]) -> usize {
-    let Some(info) = (unsafe { get_information(r#type) }) else { return 0; };
-    let _guard = cpu::InterruptFreeGuard::new();
-    buf.iter_mut()
-        .zip(info.object_list.into_iter().rev())
-        .map(|(obj, node)| obj.write(unsafe { *(container_of!(node, Object, list)) }))
-        .count()
-}
-
-/// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L289).
-pub fn init(object: &mut MaybeUninit<Object>, r#type: ObjectClassType, name: &str) {
-    let info = unsafe { get_information(r#type) }.unwrap();
-    {
-        let _guard = scheduler::LockNestedGuard::new();
-        let _guard = cpu::InterruptFreeGuard::new();
-        for member in info
-            .object_list
-            .into_iter()
-            .map(|node| container_of!(node, Object, list))
-        {
-            assert_ne!(member, object.as_ptr());
-        }
-    }
-    let object = unsafe { object.assume_init_mut() };
-    let name = name.as_bytes();
-    let len = object.name.len().min(name.len());
-    object.name[..len].copy_from_slice(&name[..len]);
-    object.r#type = r#type as u8 | ObjectClassType::Static as u8;
-    object.flag = 0;
-    // TODO HOOK
-    let _guard = cpu::InterruptFreeGuard::new();
-    info.object_list.insert(&mut object.list);
-}
-
-/// See [the c code](https://github.com/RT-Thread/rtthread-nano/blob/9177e3e2f61794205565b2c53b0cb4ed2abcc43b/rt-thread/src/object.c#L347).
-pub fn detach(object: &mut Object) {
-    // TODO HOOK
-
-    object.r#type = 0;
-
-    let _guard = cpu::InterruptFreeGuard::new();
-    object.list.remove();
-}
-
 #[test]
 fn test_get_information() {
     unsafe {
@@ -215,27 +247,27 @@ fn test_get_information() {
                 None
             ],
             [
-                get_information(ObjectClassType::Null),
-                get_information(ObjectClassType::Thread),
+                Object::get_information(ObjectClassType::Null),
+                Object::get_information(ObjectClassType::Thread),
                 #[cfg(feature = "semaphore")]
-                get_information(ObjectClassType::Semaphore),
+                Object::get_information(ObjectClassType::Semaphore),
                 #[cfg(feature = "mutex")]
-                get_information(ObjectClassType::Mutex),
+                Object::get_information(ObjectClassType::Mutex),
                 #[cfg(feature = "event")]
-                get_information(ObjectClassType::Event),
+                Object::get_information(ObjectClassType::Event),
                 #[cfg(feature = "mailbox")]
-                get_information(ObjectClassType::MailBox),
+                Object::get_information(ObjectClassType::MailBox),
                 #[cfg(feature = "message-queue")]
-                get_information(ObjectClassType::MessageQueue),
+                Object::get_information(ObjectClassType::MessageQueue),
                 #[cfg(feature = "mem-heap")]
-                get_information(ObjectClassType::MemHeap),
+                Object::get_information(ObjectClassType::MemHeap),
                 #[cfg(feature = "mem-pool")]
-                get_information(ObjectClassType::MemPool),
+                Object::get_information(ObjectClassType::MemPool),
                 #[cfg(feature = "device")]
-                get_information(ObjectClassType::Device),
-                get_information(ObjectClassType::Timer),
-                get_information(ObjectClassType::Unknown),
-                get_information(ObjectClassType::Static),
+                Object::get_information(ObjectClassType::Device),
+                Object::get_information(ObjectClassType::Timer),
+                Object::get_information(ObjectClassType::Unknown),
+                Object::get_information(ObjectClassType::Static),
             ]
         );
     }
@@ -243,30 +275,34 @@ fn test_get_information() {
 
 #[test]
 fn test_modify() {
-    assert_eq!(0, get_length(ObjectClassType::Null));
-    assert_eq!(0, get_length(ObjectClassType::Thread));
+    use ObjectClassType as Ty;
+
+    assert_eq!(0, Object::get_length(Ty::Null));
+    assert_eq!(0, Object::get_length(Ty::Thread));
 
     let mut threads = unsafe { MaybeUninit::<[MaybeUninit<Object>; 2]>::uninit().assume_init() };
-    init(&mut threads[0], ObjectClassType::Thread, "thread0");
-    init(&mut threads[1], ObjectClassType::Thread, "thread1");
+    Object::init(&mut threads[0], Ty::Thread, "thread0");
+    Object::init(&mut threads[1], Ty::Thread, "thread1");
 
-    assert_eq!(2, get_length(ObjectClassType::Thread));
+    assert_eq!(2, Object::get_length(Ty::Thread));
 
     let mut pointers = unsafe { MaybeUninit::<[MaybeUninit<Object>; 8]>::uninit().assume_init() };
-    assert_eq!(2, get_pointers(ObjectClassType::Thread, &mut pointers));
+    assert_eq!(2, Object::get_pointers(Ty::Thread, &mut pointers));
     for (a, b) in threads.into_iter().zip(pointers) {
         unsafe { assert_eq!(a.assume_init_read(), b.assume_init_read()) };
     }
 
-    detach(unsafe { threads[0].assume_init_mut() });
+    unsafe { threads[0].assume_init_mut() }.detach();
 
-    assert_eq!(1, get_length(ObjectClassType::Thread));
-
-    assert_eq!(1, get_pointers(ObjectClassType::Thread, &mut pointers));
+    assert_eq!(1, Object::get_length(Ty::Thread));
+    assert_eq!(1, Object::get_pointers(Ty::Thread, &mut pointers));
     unsafe {
         assert_eq!(
             threads[1].assume_init_read(),
             pointers[0].assume_init_read(),
         )
     };
+
+    let thread1 = Object::find("thread1", Ty::Thread);
+    unsafe { assert_eq!(Some(threads[1].assume_init_mut()), thread1) };
 }
