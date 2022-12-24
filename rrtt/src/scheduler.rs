@@ -1,4 +1,8 @@
-﻿pub(crate) static mut LOCK_NEST: usize = 0;
+﻿use crate::thread::Thread;
+use core::ptr::null_mut;
+
+static mut LOCK_NEST: usize = 0;
+pub(crate) static mut CURRENT_THREAD: *mut Thread = null_mut();
 
 pub struct LockNestedGuard;
 

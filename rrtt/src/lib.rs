@@ -2,6 +2,7 @@
 #![allow(unused)]
 
 const NAME_MAX: usize = 8;
+const PRIORITY_MAX: usize = 8;
 
 macro_rules! container_of {
     ($ptr:expr, $ty:ty, $field:ident) => {
@@ -13,5 +14,6 @@ mod cpu;
 mod list;
 mod object;
 mod scheduler;
+mod thread;
 
 type TodoType = ();
