@@ -9,7 +9,7 @@
 C 里很常见的基于数值的条件编译：
 
 ```c
-# if RT_THREAD_PRIORITY_MAX <= 32
+#if RT_THREAD_PRIORITY_MAX <= 32
 ...
 #else
 ...
