@@ -8,6 +8,7 @@ authors = ["YdrMaster <ydrml@hotmail.com>"]
 
 [dependencies]
 cfg-if = "1"
+konst = "0.3.4"
 memoffset = "0.8"
 
 [features]
